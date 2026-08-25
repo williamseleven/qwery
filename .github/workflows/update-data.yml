@@ -29,7 +29,7 @@ jobs:
           curl -fsSL "https://vtex.brandlive.net/upload/queries/ops-om-ar.csv" -o data/ops-om-ar.csv
           echo "Filas descargadas: $(wc -l < data/ops-om-ar.csv)"
 
-      - name: Commitear si cambió
+    - name: Commitear si cambió
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -38,5 +38,6 @@ jobs:
             echo "Sin cambios en el CSV."
           else
             git commit -m "chore: actualizar datos CSV [skip ci]"
-            git push
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           fi

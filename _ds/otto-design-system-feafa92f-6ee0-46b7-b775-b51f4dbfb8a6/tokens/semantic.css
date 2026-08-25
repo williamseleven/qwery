@@ -1,0 +1,88 @@
+/* Otto Design System — Semantic aliases
+   Maps raw primitives (tokens/fig-tokens.css) to meaningful, intent-based roles.
+   Build UI against these, not the raw --color-* scales, so themes stay swappable. */
+
+:root {
+  /* ---- Brand (Infracommerce family) ---- */
+  --brand-primary: var(--color-shop-light-6);      /* #6E61E5 Otto purple */
+  --brand-primary-hover: var(--color-shop-light-5); /* #9589FF */
+  --brand-primary-active: var(--color-shop-light-7);/* #6256CC */
+  --brand-primary-bg: var(--color-shop-light-1);    /* #F2F0FF tint */
+  --brand-primary-border: var(--color-shop-light-3);/* #CAC4FF */
+  --brand-ink: var(--color-shop-light-10);          /* #181633 deep indigo */
+  --brand-master: var(--color-master-light-6);      /* #3F3354 logo plum */
+
+  /* Sub-brand accents */
+  --brand-shop: var(--color-shop-light-6);          /* #6E61E5 */
+  --brand-data: var(--color-data-light-6);          /* #FFAC48 orange */
+  --brand-digital: var(--color-digital-light-6);    /* #E02760 magenta */
+  --brand-log: var(--color-log-light-6);            /* #43BDDC cyan */
+  --brand-pay: var(--color-pay-light-6);            /* #32CC7E green */
+
+  /* ---- Status / feedback ---- */
+  --status-info: var(--color-blue-light-6);         /* #1890FF */
+  --status-info-bg: var(--color-blue-light-1);      /* #E8F4FF */
+  --status-info-border: var(--color-blue-light-3);
+  --status-success: var(--color-green-light-6);     /* #52C41A */
+  --status-success-bg: var(--color-green-light-1);  /* #EEF9E8 */
+  --status-success-border: var(--color-green-light-3);
+  --status-warning: var(--color-yellow-light-6);    /* #FAAD14 */
+  --status-warning-bg: var(--color-yellow-light-1); /* #FFF7E8 */
+  --status-warning-border: var(--color-yellow-light-3);
+  --status-error: var(--color-red-light-6);         /* #E6202A */
+  --status-error-bg: var(--color-red-light-1);      /* #FEE9EA */
+  --status-error-border: var(--color-red-light-3);
+
+  /* ---- Text ---- */
+  --text-primary: var(--color-neutral-light-10);    /* #262626 */
+  --text-secondary: var(--color-neutral-light-9);   /* #4C4C4C */
+  --text-tertiary: var(--color-neutral-light-8);    /* #737373 */
+  --text-quaternary: var(--color-neutral-light-7);  /* #999999 */
+  --text-disabled: var(--color-neutral-light-6);    /* #BFBFBF */
+  --text-on-brand: var(--color-neutral-light-0);    /* #FFFFFF */
+  --text-link: var(--brand-primary);
+  --text-heading: var(--color-neutral-dark-0);      /* #1E1E1E */
+
+  /* ---- Surfaces ---- */
+  --surface-page: var(--color-neutral-light-1);     /* #F9F9F9 */
+  --surface-card: var(--color-neutral-light-0);     /* #FFFFFF */
+  --surface-sunken: var(--color-neutral-light-2);   /* #F2F2F2 */
+  --surface-hover: var(--color-neutral-light-2);    /* #F2F2F2 */
+  --surface-inverse: var(--brand-ink);              /* #181633 */
+
+  /* ---- Borders / dividers ---- */
+  --border-base: var(--color-neutral-light-4);      /* #D9D9D9 */
+  --border-subtle: var(--color-neutral-light-3);    /* #E5E5E5 */
+  --border-strong: var(--color-neutral-light-5);    /* #CCCCCC */
+  --divider: var(--color-neutral-light-3);          /* #E5E5E5 */
+
+  /* ---- Typography scale (px, ready to use) ---- */
+  --type-display-lg: calc(var(--font-size-display-large) * 1px);   /* 64 */
+  --type-display-md: calc(var(--font-size-display-medium) * 1px);  /* 48 */
+  --type-display-sm: calc(var(--font-size-display-small) * 1px);   /* 32 */
+  --type-heading-lg: calc(var(--font-size-heading-large) * 1px);   /* 28 */
+  --type-heading-md: calc(var(--font-size-heading-medium) * 1px);  /* 20 */
+  --type-heading-sm: calc(var(--font-size-heading-small) * 1px);   /* 18 */
+  --type-body-lg: calc(var(--font-size-paragraph-large) * 1px);    /* 16 */
+  --type-body-md: calc(var(--font-size-paragraph-medium) * 1px);   /* 14 */
+  --type-body-sm: calc(var(--font-size-paragraph-small) * 1px);    /* 12 */
+
+  /* ---- Radius (Ant-ish, small) ---- */
+  --radius-xs: calc(var(--shape-2) * 1px);   /* 2 */
+  --radius-sm: calc(var(--shape-4) * 1px);   /* 4 */
+  --radius-md: calc(var(--shape-6) * 1px);   /* 6 default control radius */
+  --radius-lg: calc(var(--shape-8) * 1px);   /* 8 */
+  --radius-xl: calc(var(--shape-16) * 1px);  /* 16 cards/surfaces */
+  --radius-pill: calc(var(--shape-100) * 1px);
+
+  /* ---- Control heights ---- */
+  --control-h-sm: 24px;
+  --control-h-md: 32px;
+  --control-h-lg: 40px;
+
+  /* ---- Elevation (Ant shadow ramp) ---- */
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.03), 0 1px 6px -1px rgba(0,0,0,0.02), 0 2px 4px rgba(0,0,0,0.02);
+  --shadow-2: 0 1px 2px -2px rgba(0,0,0,0.16), 0 3px 6px rgba(0,0,0,0.12), 0 5px 12px 4px rgba(0,0,0,0.09);
+  --shadow-3: 0 6px 16px 0 rgba(0,0,0,0.08), 0 3px 6px -4px rgba(0,0,0,0.12), 0 9px 28px 8px rgba(0,0,0,0.05);
+  --shadow-focus-brand: 0 0 0 3px rgba(110,97,229,0.18);
+}

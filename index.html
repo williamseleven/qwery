@@ -7,34 +7,19 @@
 
 <!--
   ============================================================================
-  QWERY INFRACOMMERCE — Tablero logístico (pivot Courier × Método × Día)
+  TRANSPORTADORAS INFRACOMMERCE — Tablero logístico (Courier × Método × Día)
   ----------------------------------------------------------------------------
-  Archivo ÚNICO y autocontenido, pensado para GitHub Pages.
-  Todo corre en el navegador. Sin backend. No hay polling ni auto-refresh:
-  los datos se descargan y la tabla se reconstruye SOLO al tocar
-  "Actualizar descarga".
-
-  Dependencia por CDN:
-   - PapaParse 5.x  -> parser de CSV robusto. Se eligió porque el CSV real:
-       * usa ';' como separador,
-       * trae campos con comas dentro de números ("2,00002E+15"),
-       * puede tener celdas vacías consecutivas y comillas.
-     Un split() a mano rompería con esos casos; PapaParse maneja
-     delimitador, comillas, saltos de línea y encabezados de forma probada.
-
-  El código está separado en bloques:
-   (1) CONFIG            -> URL, nombres de columna, proxies
-   (2) FETCH + PARSEO    -> descarga fresca (no-cache) + PapaParse
-   (3) LÓGICA DE NEGOCIO -> getCourier() y buildPivot()
-   (4) RENDER            -> tabla dinámica y filtros
-   (5) UI / WIRING       -> botón, estados de carga, timestamp
+  Pensado para GitHub Pages. El CSV NO se parsea en el navegador: un script
+  (scripts/build_data.py) corre en GitHub Actions, lo pre-agrega y publica un
+  data.json chico con índices enteros. Esta página solo lee ese JSON y cuenta,
+  por eso no se traba. El botón "Actualizar descarga" y el auto-refresh (5 min)
+  vuelven a leer data.json (que el Action regenera cada 5 min).
   ============================================================================
 -->
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
 <style>
   /* ---------- (4) UI / ESTILOS ---------- */
@@ -224,12 +209,12 @@
     <label class="auto-line"><input type="checkbox" id="autoRefresh" checked> Actualizar automáticamente cada 5 min <span id="autoNext"></span></label>
   </div>
 
-  <!-- Opciones de descarga -->
+  <!-- Info de origen de datos -->
   <div class="fetch-opts">
     <div class="sub" style="padding-left:0">
-      Los datos salen de <code>data/ops-om-ar.csv</code> (lo actualiza GitHub Actions).<br>
-      ¿Necesitás probar otro archivo? <span class="file-load" id="fileLoad">Cargar un CSV local</span>
-      <input type="file" id="fileInput" accept=".csv,text/csv" style="display:none">
+      Los datos salen de <code>data.json</code> (lo pre-genera GitHub Actions cada 5 min).<br>
+      ¿Necesitás probar otro archivo? <span class="file-load" id="fileLoad">Cargar un data.json local</span>
+      <input type="file" id="fileInput" accept=".json,application/json" style="display:none">
     </div>
   </div>
 
@@ -264,7 +249,7 @@
     <div class="table-scroll" id="tableScroll">
       <div class="empty-state" id="emptyState">
         <div class="big">Todavía no hay datos cargados</div>
-        <div>Tocá <b>“Actualizar descarga”</b> para bajar el CSV y armar la tabla.</div>
+        <div>Tocá <b>“Actualizar descarga”</b> para cargar los datos.</div>
       </div>
     </div>
   </div>
@@ -273,178 +258,110 @@
 
 <script>
 /* ==========================================================================
-   (1) CONFIG
+   TRANSPORTADORAS INFRACOMMERCE — capa de datos sobre data.json pre-agregado
+   --------------------------------------------------------------------------
+   El trabajo pesado (bajar el CSV, deduplicar, normalizar) lo hace
+   scripts/build_data.py en GitHub Actions y publica un data.json chico con
+   ÍNDICES ENTEROS. Acá solo leemos ese JSON y contamos -> no se traba.
+   Bloques: (1) CONFIG · (2) CARGA · (3) PIVOT · (4) RENDER · (5) UI
    ========================================================================== */
-const CSV_URL = 'https://vtex.brandlive.net/upload/queries/ops-om-ar.csv';
-// Archivo same-origin del repo (lo baja GitHub Actions). Sin CORS -> fuente por defecto.
-const DATA_LOCAL = 'data/ops-om-ar.csv';
 
-// Nombres EXACTOS de columnas en el CSV (confirmados con la base real).
-// Referencias por posición del pedido original:
-//   Columna A  (índice 0)  -> COL.bajada  = "now()"  (fecha de la bajada)
-//   Columna AC (índice 28) -> COL.method  = "ship_shipping-method"
-const COL = {
-  bajada : 'now()',                    // A  -> timestamp de la descarga
-  brand  : 'brand_name',               // filtro Brand
-  fecha  : 'order_channel-created-at',  // fecha del pedido -> agrupa por día
-  method : 'ship_shipping-method',     // AC -> método de envío (sub-filas)
-  carrier: 'ship_carier2'              // carrier de respaldo (reglas 1 y 5)
-};
+/* ---------- (1) CONFIG ---------- */
+const DATA_URL = 'data.json';   // lo genera scripts/build_data.py
 
-// Lista CERRADA de couriers posibles. "Meliflex" NO es courier (es un tipo de envío).
 const COURIERS = ['Moova','Andreani','Ocasa','Fasttrack','Inner','Pickit','Cabify','Elogistica','HOP','Sin asignar'];
-
-// Color de marca por courier (para el punto identificador en la fila).
 const COURIER_COLOR = {
   Moova:'#7A6CFF', Andreani:'#E52862', Ocasa:'#FFAC48', Fasttrack:'#43BDDE',
   Inner:'#32CC7E', Pickit:'#9B59B6', Cabify:'#111', Elogistica:'#2D8CFF',
   HOP:'#E67E22', 'Sin asignar':'#B8B8BE'
 };
-
-// Normaliza un valor de carrier a su nombre canónico de courier.
-const CANON = {
-  andreani:'Andreani', cabify:'Cabify', fasttrack:'Fasttrack', hop:'HOP',
-  inner:'Inner', innerlogistics:'Inner', moova:'Moova', ocasa:'Ocasa',
-  pickit:'Pickit', elogistica:'Elogistica', elogisticaregular:'Elogistica'
-};
-
-// Meses abreviados (es) para los encabezados de columna en formato corto.
 const MES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
 
-// Estado en memoria (datos ya descargados; los filtros trabajan sobre esto).
-const state = { rows:[], days:[], filterCourier:new Set(), filterBrand:new Set(),
-                collapsed:new Set(), lastUpdate:'', dateFrom:'', dateTo:'' };
+const state = { data:null, filterCourier:new Set(), filterBrand:new Set(),
+                collapsed:new Set(), dateFrom:'', dateTo:'', lastUpdate:'' };
 
-/* ==========================================================================
-   (3) LÓGICA DE NEGOCIO
-   -------------------------------------------------------------------------- */
+/* ---------- helpers ---------- */
+const fmt = n => n ? n.toLocaleString('es-AR') : '';
+function escHtml(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function escAttr(s){return String(s).replace(/"/g,'&quot;');}
 
-// Devuelve el nombre canónico de un carrier libre (col ship_carier2).
-function canonCarrier(raw){
-  const k = (raw||'').trim().toLowerCase();
-  if(!k) return null;
-  if(CANON[k]) return CANON[k];
-  // Fallback auditable: se muestra tal cual con la 1ª letra en mayúscula
-  // (no se pierde silenciosamente ningún valor inesperado).
-  return k.charAt(0).toUpperCase() + k.slice(1);
+// 'aaaa-mm-dd' -> 'd mmm' (encabezado corto). 's/f' u otro -> tal cual.
+function dayLabel(iso){
+  const p = (iso||'').split('-');
+  if(p.length < 3) return iso || 's/f';
+  return (+p[2]) + ' ' + (MES[(+p[1]) - 1] || '');
 }
 
-/*
-  getCourier(method, carrier2) — FUNCIÓN PURA Y AUDITABLE.
-  Evalúa reglas EN ORDEN sobre ship_shipping-method (en minúsculas).
-  Gana la PRIMERA que matchea.
+/* ---------- (3) PIVOT — sobre índices enteros de data.json ----------
+   data.json:
+     brands[], couriers[], methods[] (ship_shipping-method crudo), dates[] (ISO),
+     orders[] = [brandIdx, courierIdx, methodIdx, dateIdx]
+   Reglas de negocio (en build_data.py): 1 fila por pedido (dedup order_id),
+   sin cancelados, sin 'me2'.
+   MÉTRICA: cada celda cuenta pedidos. Para sumar un monto habría que incluir
+   ese valor en data.json y acumularlo acá en vez de +1.
 */
-function getCourier(method, carrier2){
-  const m = (method || '').trim().toLowerCase();
+function buildPivot(){
+  const d = state.data;
+  if(!d || !d.orders) return { days:[], couriers:[] };
 
-  // Regla 1: me2_flex_bsas / me2_flex_caba -> courier desde ship_carier2
-  if(m === 'me2_flex_bsas' || m === 'me2_flex_caba'){
-    return canonCarrier(carrier2) || 'Sin asignar';
-  }
-  // Regla 2: empieza con spu_estandar -> Elogistica
-  if(m.startsWith('spu_estandar')) return 'Elogistica';
-  // Regla 3: empieza con spu_ocasa -> Ocasa
-  if(m.startsWith('spu_ocasa')) return 'Ocasa';
-  // Regla 4: prefijo antes del primer "_" o ":" dentro de la lista conocida
-  const iU = m.indexOf('_'), iC = m.indexOf(':');
-  const cut = Math.min(iU === -1 ? Infinity : iU, iC === -1 ? Infinity : iC);
-  const prefix = cut === Infinity ? m : m.slice(0, cut);
-  if(CANON[prefix]) return CANON[prefix];
-  // Regla 5: fallback -> ship_carier2 ; vacío -> Sin asignar
-  return canonCarrier(carrier2) || 'Sin asignar';
-}
+  // Filtros -> conjuntos de índices (una vez por render)
+  const cAllow = new Set(); d.couriers.forEach((n,i)=>{ if(state.filterCourier.has(n)) cAllow.add(i); });
+  const bAllow = new Set(); d.brands.forEach((n,i)=>{ if(state.filterBrand.has(n)) bAllow.add(i); });
+  const dAllow = d.dates.map(x => (!state.dateFrom || x >= state.dateFrom) && (!state.dateTo || x <= state.dateTo));
 
-// Parsea "d/m/aaaa hh:mm" -> {key:'aaaa-mm-dd' (ordenable), label:'d mmm'}.
-function parseDay(raw){
-  if(!raw) return { key:'zzzz', label:'s/f' };
-  const datePart = String(raw).trim().split(/\s+/)[0];      // "25/8/2026"
-  const p = datePart.split('/');
-  if(p.length < 3) return { key:'zzzz', label:'s/f' };
-  const d = parseInt(p[0],10), mo = parseInt(p[1],10), y = parseInt(p[2],10);
-  if(!d || !mo || !y) return { key:'zzzz', label:'s/f' };
-  const key = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-  return { key, label:`${d} ${MES[mo-1] || ''}`.trim() };
-}
-
-/*
-  buildPivot(rows) — arma la estructura del pivot aplicando los filtros activos.
-  Devuelve: { days:[{key,label}], couriers:[{name, methods:[{name, cells, total}], totals, total}] }
-
-  TODO (métrica): hoy cada celda CUENTA filas (envíos/pedidos).
-  Para sumar un monto en vez de contar, cambiá `+ 1` por `+ Number(row['<columna_monto>'])`
-  en el acumulador de abajo (buscá el comentario "MÉTRICA").
-*/
-function buildPivot(rows){
-  const dayMap = new Map();              // key -> label
-  // pivot: courier -> method -> {dayKey -> count}
-  const pivot = new Map();
-
-  for(const row of rows){
-    const brand = (row[COL.brand] || '').trim();
-    if(state.filterBrand.size && !state.filterBrand.has(brand)) continue;
-
-    const courier = getCourier(row[COL.method], row[COL.carrier]);
-    if(state.filterCourier.size && !state.filterCourier.has(courier)) continue;
-
-    const method = (row[COL.method] || '(vacío)').trim() || '(vacío)';
-    const { key, label } = parseDay(row[COL.fecha]);
-    // Filtro de fecha (rango desde/hasta). Las claves son 'aaaa-mm-dd' -> comparación de strings.
-    if(state.dateFrom && key < state.dateFrom) continue;
-    if(state.dateTo && key > state.dateTo) continue;
-    dayMap.set(key, label);
-
-    if(!pivot.has(courier)) pivot.set(courier, new Map());
-    const mMap = pivot.get(courier);
-    if(!mMap.has(method)) mMap.set(method, new Map());
-    const cMap = mMap.get(method);
-    cMap.set(key, (cMap.get(key) || 0) + 1);   // MÉTRICA: count de filas
+  const pivot = new Map();       // cIdx -> Map(mIdx -> Map(dIdx -> count))
+  const usedDays = new Set();
+  const O = d.orders;
+  for(let k=0;k<O.length;k++){
+    const o = O[k], b = o[0], c = o[1], m = o[2], dd = o[3];
+    if(!bAllow.has(b)) continue;
+    if(!cAllow.has(c)) continue;
+    if(!dAllow[dd]) continue;
+    usedDays.add(dd);
+    let mM = pivot.get(c); if(!mM){ mM = new Map(); pivot.set(c, mM); }
+    let cM = mM.get(m);   if(!cM){ cM = new Map(); mM.set(m, cM); }
+    cM.set(dd, (cM.get(dd) || 0) + 1);
   }
 
-  // Columnas (días) ordenadas cronológicamente ('zzzz'/s-f queda al final).
-  const days = [...dayMap.keys()].sort().map(k => ({ key:k, label:dayMap.get(k) }));
+  // dates viene ordenado ascendente -> ordenar por índice conserva la cronología
+  const days = [...usedDays].sort((a,b)=>a-b).map(di => ({ di, label: dayLabel(d.dates[di]) }));
 
-  // Ordenar couriers según la lista cerrada; los que no estén, al final.
-  const order = c => { const i = COURIERS.indexOf(c); return i === -1 ? 999 : i; };
-  const couriers = [...pivot.keys()].sort((a,b)=>order(a)-order(b) || a.localeCompare(b))
-    .map(cName => {
-      const mMap = pivot.get(cName);
+  const order = n => { const i = COURIERS.indexOf(n); return i === -1 ? 999 : i; };
+  const couriers = [...pivot.keys()]
+    .sort((a,b)=> order(d.couriers[a]) - order(d.couriers[b]))
+    .map(cIdx => {
+      const mM = pivot.get(cIdx);
       const totals = {}; let total = 0;
-      const methods = [...mMap.keys()].map(mName => {
-        const cMap = mMap.get(mName);
-        const cells = {}; let mTotal = 0;
-        for(const d of days){
-          const v = cMap.get(d.key) || 0;
-          cells[d.key] = v; mTotal += v;
-          totals[d.key] = (totals[d.key] || 0) + v;
+      const methods = [...mM.keys()].map(mIdx => {
+        const cM = mM.get(mIdx); const cells = {}; let mt = 0;
+        for(const day of days){
+          const v = cM.get(day.di) || 0;
+          cells[day.di] = v; mt += v;
+          totals[day.di] = (totals[day.di] || 0) + v;
         }
-        total += mTotal;
-        return { name:mName, cells, total:mTotal };
-      }).sort((a,b)=>b.total - a.total);   // métodos por volumen desc
-      return { name:cName, methods, totals, total };
+        total += mt;
+        return { name: d.methods[mIdx], cells, total: mt };
+      }).sort((a,b)=> b.total - a.total);
+      return { name: d.couriers[cIdx], methods, totals, total };
     });
 
   return { days, couriers };
 }
 
-/* ==========================================================================
-   (4) RENDER — tabla y filtros
-   ========================================================================== */
-const fmt = n => n ? n.toLocaleString('es-AR') : '';
-
+/* ---------- (4) RENDER ---------- */
 function renderTable(){
   const scroll = document.getElementById('tableScroll');
-  if(!state.rows.length){
+  if(!state.data){
     scroll.innerHTML = `<div class="empty-state"><div class="big">Todavía no hay datos cargados</div>
-      <div>Tocá <b>“Actualizar descarga”</b> para bajar el CSV y armar la tabla.</div></div>`;
+      <div>Tocá <b>“Actualizar descarga”</b> para cargar los datos.</div></div>`;
     document.getElementById('metaLine').textContent = '';
     return;
   }
-
-  const { days, couriers } = buildPivot(state.rows);
-
+  const { days, couriers } = buildPivot();
   if(!couriers.length){
     scroll.innerHTML = `<div class="empty-state"><div class="big">Sin resultados</div>
-      <div>Ningún registro coincide con los filtros seleccionados.</div></div>`;
+      <div>Ningún pedido coincide con los filtros seleccionados.</div></div>`;
     document.getElementById('metaLine').textContent = '';
     return;
   }
@@ -460,23 +377,20 @@ function renderTable(){
     const isCol = state.collapsed.has(c.name);
     const caret = isCol ? '▸' : '▾';
     const color = COURIER_COLOR[c.name] || '#B8B8BE';
-    // Fila de courier = TOTAL por courier (suma de sus métodos) + colapsable
     html += `<tr class="courier-row" data-courier="${escAttr(c.name)}">`;
     html += `<td class="lbl"><span class="caret-tog">${caret}</span>`+
             `<span class="courier-dot" style="background:${color}"></span>${escHtml(c.name)}</td>`;
     for(const d of days){
-      const v = c.totals[d.key] || 0;
+      const v = c.totals[d.di] || 0;
       html += `<td class="num ${v?'':'zero'}">${v?fmt(v):'·'}</td>`;
     }
     html += `<td class="num col-total">${fmt(c.total)}</td></tr>`;
-
-    // Sub-filas por método (ocultas si el courier está colapsado)
     for(const m of c.methods){
       const disp = isCol ? ' style="display:none"' : '';
       html += `<tr class="method-row" data-of="${escAttr(c.name)}"${disp}>`;
       html += `<td class="lbl">${escHtml(m.name)}</td>`;
       for(const d of days){
-        const v = m.cells[d.key] || 0;
+        const v = m.cells[d.di] || 0;
         html += `<td class="num ${v?'':'zero'}">${v?fmt(v):'·'}</td>`;
       }
       html += `<td class="num col-total">${fmt(m.total)}</td></tr>`;
@@ -486,14 +400,12 @@ function renderTable(){
   scroll.innerHTML = html;
 
   document.getElementById('metaLine').textContent =
-    `${fmt(state.rows.length)} filas procesadas · ${couriers.length} couriers · ${days.length} días · total de envíos mostrado: ${fmt(grand)}`;
+    `${fmt(state.data.orders.length)} pedidos · ${couriers.length} couriers · ${days.length} días · total mostrado: ${fmt(grand)}`;
 
-  // Toggle colapso por courier
   scroll.querySelectorAll('tr.courier-row').forEach(tr=>{
     tr.addEventListener('click', ()=>{
       const name = tr.getAttribute('data-courier');
-      if(state.collapsed.has(name)) state.collapsed.delete(name);
-      else state.collapsed.add(name);
+      if(state.collapsed.has(name)) state.collapsed.delete(name); else state.collapsed.add(name);
       renderTable();
     });
   });
@@ -506,13 +418,11 @@ function buildMultiselect(elId, values, selectedSet, onChange){
   const textEl = root.querySelector('.ms-text');
   panel.innerHTML = `<div class="ms-actions"><a data-act="all">Todos</a><a data-act="none">Ninguno</a></div>` +
     values.map(v=>`<label><input type="checkbox" value="${escAttr(v)}" ${selectedSet.has(v)?'checked':''}>${escHtml(v)}</label>`).join('');
-
   const updateText = ()=>{
     if(selectedSet.size === 0 || selectedSet.size === values.length) textEl.textContent = 'Todos';
     else textEl.textContent = `${selectedSet.size} de ${values.length}`;
   };
   updateText();
-
   panel.querySelectorAll('input[type=checkbox]').forEach(cb=>{
     cb.addEventListener('change', ()=>{
       if(cb.checked) selectedSet.add(cb.value); else selectedSet.delete(cb.value);
@@ -528,9 +438,8 @@ function buildMultiselect(elId, values, selectedSet, onChange){
       updateText(); onChange();
     });
   });
-
-  const btn = root.querySelector('.ms-btn');
-  btn.onclick = e=>{
+  const msBtn = root.querySelector('.ms-btn');
+  msBtn.onclick = e=>{
     e.stopPropagation();
     document.querySelectorAll('.ms-panel').forEach(p=>{ if(p!==panel) p.classList.remove('open'); });
     panel.classList.toggle('open');
@@ -539,67 +448,28 @@ function buildMultiselect(elId, values, selectedSet, onChange){
 document.addEventListener('click', ()=>document.querySelectorAll('.ms-panel').forEach(p=>p.classList.remove('open')));
 
 function refreshFilters(){
-  // Courier: lista cerrada; Brand: valores únicos del CSV descargado
-  buildMultiselect('msCourier', COURIERS, state.filterCourier, renderTable);
-  const brands = [...new Set(state.rows.map(r=>(r[COL.brand]||'').trim()).filter(Boolean))].sort();
-  buildMultiselect('msBrand', brands, state.filterBrand, renderTable);
+  const cs = COURIERS.filter(c => state.data.couriers.includes(c));   // solo couriers presentes
+  buildMultiselect('msCourier', cs.length ? cs : COURIERS, state.filterCourier, renderTable);
+  buildMultiselect('msBrand', state.data.brands.slice(), state.filterBrand, renderTable);
 }
 
-// Helpers de escape
-function escHtml(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
-function escAttr(s){return String(s).replace(/"/g,'&quot;');}
-
-/* ==========================================================================
-   (2) FETCH + PARSEO
-   -------------------------------------------------------------------------- */
-
-// Construye la URL con cache-buster para forzar descarga fresca.
+/* ---------- (2) CARGA de data.json ---------- */
 function bustUrl(u){ return u + (u.includes('?') ? '&' : '?') + '_cb=' + Date.now(); }
 
-// Envuelve la URL con el proxy elegido (solo si el usuario habilitó el fallback).
-function wrapProxy(u){
-  const sel = document.getElementById('proxySel').value;
-  if(sel === 'allorigins') return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u);
-  if(sel === 'corsproxy')  return 'https://corsproxy.io/?url=' + encodeURIComponent(u);
-  if(sel === 'custom'){
-    const base = document.getElementById('proxyCustom').value.trim();
-    if(!base) throw new Error('Ingresá la URL de tu proxy propio.');
-    return base + encodeURIComponent(u);
-  }
-  return u;
+async function downloadData(){
+  const res = await fetch(bustUrl(DATA_URL), { cache:'no-store' });
+  if(!res.ok) throw new Error('No se encontró "' + DATA_URL + '" (HTTP ' + res.status +
+    '). ¿Ya corrió el workflow de GitHub Actions que genera data.json?');
+  return await res.json();
 }
 
-async function downloadCsvText(){
-  // Fuente única: archivo del repo (same-origin, sin CORS). Descarga fresca.
-  const res = await fetch(bustUrl(DATA_LOCAL), { cache:'no-store' });
-  if(!res.ok) throw new Error('No se encontró "' + DATA_LOCAL + '" (HTTP ' + res.status +
-    '). ¿Ya corrió el workflow de GitHub Actions que baja el CSV?');
-  return await res.text();
-}
-
-// Parseo del texto CSV -> filas (objetos por nombre de columna).
-function parseCsv(text){
-  const out = Papa.parse(text, {
-    header:true,          // usa la primera fila como nombres de columna
-    delimiter:';',        // separador real del archivo
-    skipEmptyLines:true,
-    transformHeader:h=>h.trim()
-  });
-  return out.data.filter(r => r && Object.keys(r).length);
-}
-
-// Pipeline compartido: recibe texto CSV, actualiza estado y re-renderiza.
-// Expuesto para poder inyectar un CSV (archivo local o tests).
-function ingestCsv(text){
-  const rows = parseCsv(text);
-  if(!rows.length) throw new Error('El CSV se descargó pero no tiene filas de datos.');
-  state.rows = rows;
-  // Timestamp: columna A (now()) de la primera fila de datos.
-  state.lastUpdate = (rows[0][COL.bajada] || '').trim() || '—';
-  // Reset de filtros a "todos"
-  state.filterCourier = new Set(COURIERS);
-  state.filterBrand   = new Set(rows.map(r=>(r[COL.brand]||'').trim()).filter(Boolean));
-  // Reset del filtro de fecha a "todas"
+// Aplica un objeto data.json al estado y re-renderiza. Expuesto para tests.
+function ingestData(json){
+  if(!json || !Array.isArray(json.orders)) throw new Error('data.json inválido o sin la clave "orders".');
+  state.data = json;
+  state.lastUpdate = json.last_update || json.generated_at || '—';
+  state.filterCourier = new Set(json.couriers);
+  state.filterBrand   = new Set(json.brands);
   state.dateFrom = ''; state.dateTo = '';
   const _df = document.getElementById('dateFrom'), _dt = document.getElementById('dateTo');
   if(_df) _df.value = ''; if(_dt) _dt.value = '';
@@ -608,59 +478,49 @@ function ingestCsv(text){
   document.getElementById('lastUpdate').innerHTML =
     'Última actualización: <b class="lu-mono">' + escHtml(state.lastUpdate) + '</b>';
 }
-window.qwery = { ingestCsv, getCourier, buildPivot, state };  // auditable / testeable
+window.qwery = { ingestData, buildPivot, state };   // auditable / testeable
 
-/* ==========================================================================
-   (5) UI / WIRING — botón, estados de carga, errores
-   ========================================================================== */
+/* ---------- (5) UI / WIRING ---------- */
 const btn = document.getElementById('btnUpdate');
 const errBanner = document.getElementById('errBanner');
-
 function setLoading(on){
   btn.classList.toggle('loading', on);
   btn.disabled = on;
   btn.querySelector('.btn-label').textContent = on ? 'Actualizando…' : 'Actualizar descarga';
 }
-function showError(msg){
-  errBanner.innerHTML = msg;
-  errBanner.classList.add('show');
-}
+function showError(msg){ errBanner.innerHTML = msg; errBanner.classList.add('show'); }
 function clearError(){ errBanner.classList.remove('show'); errBanner.innerHTML=''; }
 
 async function updateNow(){
-  clearError();
-  setLoading(true);
+  clearError(); setLoading(true);
   try{
-    const text = await downloadCsvText();
-    ingestCsv(text);
+    const json = await downloadData();
+    ingestData(json);
   }catch(err){
-    const isCors = err && (err.name === 'TypeError' || /failed to fetch|load failed|networkerror/i.test(err.message||''));
-    if(isCors){
-      showError('<b>No se pudo cargar el CSV.</b><br>'+
-        'La página lee <code>data/ops-om-ar.csv</code> del repo. Verificá que el workflow '+
-        'de GitHub Actions haya corrido y generado ese archivo, o cargá un CSV local.');
+    const net = err && (err.name === 'TypeError' || /failed to fetch|load failed|networkerror/i.test(err.message||''));
+    if(net){
+      showError('<b>No se pudieron cargar los datos.</b><br>'+
+        'La página lee <code>data.json</code> del repo. Verificá que el workflow de '+
+        'GitHub Actions haya corrido y generado ese archivo.');
     }else{
       showError('<b>Error al actualizar:</b> ' + escHtml(err.message || String(err)));
     }
-  }finally{
-    setLoading(false);
-  }
+  }finally{ setLoading(false); }
 }
-
 btn.addEventListener('click', updateNow);
 
-// Carga de CSV local (fallback / test offline)
+// Cargar un data.json local (respaldo / test offline)
 document.getElementById('fileLoad').addEventListener('click', ()=>document.getElementById('fileInput').click());
 document.getElementById('fileInput').addEventListener('change', e=>{
   const f = e.target.files[0]; if(!f) return;
   clearError(); setLoading(true);
   const reader = new FileReader();
-  reader.onload = () => { try{ ingestCsv(reader.result); }catch(err){ showError('<b>Error:</b> '+escHtml(err.message)); } finally{ setLoading(false); } };
+  reader.onload = () => { try{ ingestData(JSON.parse(reader.result)); }catch(err){ showError('<b>Error:</b> '+escHtml(err.message)); } finally{ setLoading(false); } };
   reader.onerror = () => { showError('No se pudo leer el archivo local.'); setLoading(false); };
   reader.readAsText(f);
 });
 
-// Estado inicial: filtros de courier con la lista cerrada (aún sin datos).
+// Filtros de courier iniciales (aún sin datos)
 buildMultiselect('msCourier', COURIERS, state.filterCourier, renderTable);
 
 // Filtro de fecha (rango desde/hasta)
@@ -673,11 +533,10 @@ document.getElementById('dateClear').addEventListener('click', ()=>{
   renderTable();
 });
 
-/* ---------- Auto-refresh cada 5 minutos (navegador) ---------- */
+/* ---------- Auto-refresh cada 5 minutos ---------- */
 const AUTO_MS = 5 * 60 * 1000;
 let autoTimer = null, tickTimer = null, nextAt = 0;
 const autoChk = document.getElementById('autoRefresh');
-
 function updateCountdown(){
   const el = document.getElementById('autoNext');
   if(!autoChk.checked){ el.textContent = ''; return; }
@@ -687,21 +546,16 @@ function updateCountdown(){
 function startAuto(){
   stopAuto();
   nextAt = Date.now() + AUTO_MS;
-  autoTimer = setInterval(()=>{
-    if(!btn.disabled) updateNow();   // evita solaparse si una descarga sigue en curso
-    nextAt = Date.now() + AUTO_MS;
-  }, AUTO_MS);
+  autoTimer = setInterval(()=>{ if(!btn.disabled) updateNow(); nextAt = Date.now() + AUTO_MS; }, AUTO_MS);
   tickTimer = setInterval(updateCountdown, 1000);
   updateCountdown();
 }
-function stopAuto(){
-  clearInterval(autoTimer); clearInterval(tickTimer);
-  document.getElementById('autoNext').textContent = '';
-}
+function stopAuto(){ clearInterval(autoTimer); clearInterval(tickTimer); document.getElementById('autoNext').textContent = ''; }
 autoChk.addEventListener('change', e => { if(e.target.checked) startAuto(); else stopAuto(); });
 
-// Al cargar: si el auto está activo, trae los datos ya y arranca el ciclo.
-if(autoChk.checked){ updateNow(); startAuto(); }
+// Al cargar: trae los datos ya y arranca el ciclo si el auto está activo.
+updateNow();
+if(autoChk.checked) startAuto();
 </script>
 </body>
 </html>

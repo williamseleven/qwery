@@ -6,7 +6,8 @@ name: Actualizar datos CSV
 on:
   workflow_dispatch:            # botón "Run workflow" manual en la pestaña Actions
   schedule:
-    - cron: '0 * * * *'         # además, automático cada hora (UTC). Ajustá/borrá si querés.
+        - cron: '*/5 * * * *'
+         # además, automático cada hora (UTC). Ajustá/borrá si querés.
 
 permissions:
   contents: write               # necesario para que el bot pueda commitear

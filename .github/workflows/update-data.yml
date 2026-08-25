@@ -1,43 +1,44 @@
-name: Actualizar datos CSV
+name: update-data
 
-# Baja el CSV desde VTEX del lado del servidor (sin CORS) y lo commitea al repo.
-# La página lo lee same-origin desde data/ops-om-ar.csv -> no hay problema de CORS.
+# Corre build_data.py (server-side, sin CORS): baja el CSV, lo pre-agrega y
+# commitea data.json a la raíz del repo. La página lee data.json same-origin.
 
 on:
-  workflow_dispatch:            # botón "Run workflow" manual en la pestaña Actions
+  workflow_dispatch:            # botón "Run workflow" manual
   schedule:
-        - cron: '*/5 * * * *'
-         # además, automático cada hora (UTC). Ajustá/borrá si querés.
+    - cron: '*/5 * * * *'       # cada 5 min (best-effort de GitHub)
 
 permissions:
-  contents: write               # necesario para que el bot pueda commitear
+  contents: write
 
 concurrency:
   group: update-data
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  update:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Descargar CSV desde VTEX
-        run: |
-          mkdir -p data
-          curl -fsSL "https://vtex.brandlive.net/upload/queries/ops-om-ar.csv" -o data/ops-om-ar.csv
-          echo "Filas descargadas: $(wc -l < data/ops-om-ar.csv)"
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
-      - name: Commitear si cambió
+      - name: Generar data.json
+        run: python scripts/build_data.py
+
+      - name: Commit si hubo cambios
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/ops-om-ar.csv
-          if git diff --quiet --cached; then
-            echo "Sin cambios en el CSV."
+          git add data.json
+          if git diff --staged --quiet; then
+            echo "Sin cambios en data.json"
           else
-            git commit -m "chore: actualizar datos CSV [skip ci]"
+            git commit -m "data: actualizacion automatica $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             git pull --rebase origin "${GITHUB_REF_NAME}"
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi

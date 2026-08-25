@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<!-- @template name="Otto Admin" description="Infracommerce B2B back-office shell — dark plum icon rail, white topbar, dashboard + catálogo + product wizard. Built on Otto DS primitives." -->
+<helmet>
+<meta charset="utf-8">
+<link rel="stylesheet" href="_ds/otto-design-system-feafa92f-6ee0-46b7-b775-b51f4dbfb8a6/styles.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/bold/style.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css">
+<script src="_ds/otto-design-system-feafa92f-6ee0-46b7-b775-b51f4dbfb8a6/_ds_bundle.js"></script>
+<style>
+  html, body { height: 100%; margin: 0; background: var(--surface-page); }
+  .otto-admin-frame { height: 100vh; min-width: 1024px; }
+</style>
+</helmet>
+<div class="otto-admin-frame">
+  <x-import component="OttoAdminApp" from="./OttoAdminApp.jsx" hint-size="100%,100%"></x-import>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:800}}"></script>
+</body>
+</html>

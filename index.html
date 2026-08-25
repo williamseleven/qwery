@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Qwery Infracommerce</title>
+
+<!--
+  ============================================================================
+  QWERY INFRACOMMERCE — Tablero logístico (pivot Courier × Método × Día)
+  ----------------------------------------------------------------------------
+  Archivo ÚNICO y autocontenido, pensado para GitHub Pages.
+  Todo corre en el navegador. Sin backend. No hay polling ni auto-refresh:
+  los datos se descargan y la tabla se reconstruye SOLO al tocar
+  "Actualizar descarga".
+
+  Dependencia por CDN:
+   - PapaParse 5.x  -> parser de CSV robusto. Se eligió porque el CSV real:
+       * usa ';' como separador,
+       * trae campos con comas dentro de números ("2,00002E+15"),
+       * puede tener celdas vacías consecutivas y comillas.
+     Un split() a mano rompería con esos casos; PapaParse maneja
+     delimitador, comillas, saltos de línea y encabezados de forma probada.
+
+  El código está separado en bloques:
+   (1) CONFIG            -> URL, nombres de columna, proxies
+   (2) FETCH + PARSEO    -> descarga fresca (no-cache) + PapaParse
+   (3) LÓGICA DE NEGOCIO -> getCourier() y buildPivot()
+   (4) RENDER            -> tabla dinámica y filtros
+   (5) UI / WIRING       -> botón, estados de carga, timestamp
+  ============================================================================
+-->
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<style>
+  /* ---------- (4) UI / ESTILOS ---------- */
+  :root{
+    /* Paleta de marca Infracommerce (imagen de referencia + fallback oficial) */
+    --plum:#3F3354;        /* violeta oscuro / títulos */
+    --violet:#7A6CFF;      /* violeta primario */
+    --violet-dark:#5f52d6;
+    --pink:#E52862;
+    --cyan:#43BDDE;
+    --green:#32CC7E;
+    --orange:#FFAC48;
+    --ink:#181633;
+    --text:#4D4D4F;        /* gris de texto */
+    --muted:#8a8a90;
+    --border:#D5D7D8;      /* líneas / bordes */
+    --bg:#F4F4F6;          /* fondo página */
+    --white:#FFFFFF;
+    --sunken:#F2F2F2;
+    --plum-tint:#EEEBF5;   /* fondo fila de courier */
+    --plum-tint-2:#E4E0F1;
+    --shadow-1:0 1px 2px rgba(24,22,51,.06),0 1px 3px rgba(24,22,51,.05);
+    --shadow-2:0 4px 16px rgba(24,22,51,.10);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:'Inter',system-ui,sans-serif;
+    color:var(--text);
+    background:var(--bg);
+    -webkit-font-smoothing:antialiased;
+    font-size:14px;
+  }
+  a{color:var(--violet);text-decoration:none}
+  a:hover{color:var(--violet-dark);text-decoration:underline}
+
+  /* Barra arcoíris de marca */
+  .rainbow{height:4px;width:100%;
+    background:linear-gradient(90deg,var(--violet) 0%,var(--pink) 30%,var(--orange) 55%,var(--green) 78%,var(--cyan) 100%);}
+
+  /* ---------- Header ---------- */
+  header.app{background:var(--white);border-bottom:1px solid var(--border);}
+  .header-inner{max-width:1560px;margin:0 auto;padding:16px 28px;
+    display:flex;align-items:center;gap:20px;flex-wrap:wrap;}
+  .brand-logo svg{height:30px;width:auto;display:block}
+  .brand-logo svg path{fill:var(--plum)}
+  .brand-sep{width:1px;height:34px;background:var(--border)}
+  .title-block h1{font-family:'Archivo',sans-serif;font-weight:800;font-size:22px;
+    color:var(--plum);margin:0;letter-spacing:-.01em;line-height:1.1}
+  .title-block p{margin:2px 0 0;font-size:12.5px;color:var(--muted)}
+
+  /* ---------- Toolbar ---------- */
+  .toolbar{max-width:1560px;margin:0 auto;padding:20px 28px 8px;
+    display:flex;align-items:flex-start;gap:24px;flex-wrap:wrap;}
+  .update-group{display:flex;flex-direction:column;gap:8px;min-width:240px}
+  .btn-update{
+    font-family:'Archivo',sans-serif;font-weight:700;font-size:14px;
+    background:var(--violet);color:#fff;border:none;border-radius:8px;
+    padding:12px 22px;cursor:pointer;display:inline-flex;align-items:center;gap:10px;white-space:nowrap;
+    transition:background .18s cubic-bezier(.645,.045,.355,1),box-shadow .18s;
+    box-shadow:var(--shadow-1);width:fit-content;
+  }
+  .btn-update:hover{background:var(--violet-dark)}
+  .btn-update:active{transform:translateY(1px)}
+  .btn-update:disabled{background:#b7b0ea;cursor:not-allowed;box-shadow:none}
+  .spinner{width:15px;height:15px;border:2.5px solid rgba(255,255,255,.45);
+    border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .btn-update.loading .spinner{display:inline-block}
+  .last-update{font-size:12.5px;color:var(--text)}
+  .last-update b{color:var(--plum);font-weight:600}
+  .last-update .lu-mono{font-family:'Roboto Mono',monospace;font-size:12px}
+
+  /* Estado de error */
+  .banner{max-width:1560px;margin:8px auto 0;padding:0 28px}
+  .banner-error{background:#FFF1F0;border:1px solid #FFCCC7;color:#a8181f;
+    border-radius:8px;padding:12px 16px;font-size:13px;line-height:1.5;display:none}
+  .banner-error.show{display:block}
+  .banner-error b{color:#8c0f16}
+
+  /* Opciones fetch (proxy / archivo local) */
+  .fetch-opts{display:flex;flex-direction:column;gap:8px;font-size:12.5px;color:var(--text)}
+  .fetch-opts label{display:flex;align-items:center;gap:7px;cursor:pointer}
+  .fetch-opts select,.fetch-opts input[type=text]{
+    font-family:inherit;font-size:12.5px;border:1px solid var(--border);
+    border-radius:6px;padding:5px 8px;color:var(--text);background:#fff;max-width:280px}
+  .fetch-opts .sub{color:var(--muted);font-size:11.5px;padding-left:23px;margin-top:-3px}
+  .file-load{color:var(--violet);cursor:pointer;font-weight:500}
+  .file-load:hover{text-decoration:underline}
+
+  /* ---------- Filtros ---------- */
+  .filters{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+  .ms{position:relative}
+  .ms-label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--muted);font-weight:600;margin-bottom:5px}
+  .ms-btn{font-family:inherit;font-size:13px;background:#fff;border:1px solid var(--border);
+    border-radius:6px;padding:9px 14px;min-width:200px;text-align:left;cursor:pointer;
+    color:var(--text);display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .ms-btn:hover{border-color:var(--violet)}
+  .ms-btn .caret{color:var(--muted);font-size:10px}
+  .ms-panel{position:absolute;z-index:40;top:calc(100% + 4px);left:0;min-width:230px;max-height:320px;
+    overflow:auto;background:#fff;border:1px solid var(--border);border-radius:8px;
+    box-shadow:var(--shadow-2);padding:8px;display:none}
+  .ms-panel.open{display:block}
+  .ms-actions{display:flex;gap:12px;padding:4px 6px 8px;border-bottom:1px solid var(--sunken);margin-bottom:6px}
+  .ms-actions a{font-size:12px;cursor:pointer}
+  .ms-panel label{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;
+    font-size:13px;cursor:pointer;color:var(--text)}
+  .ms-panel label:hover{background:var(--sunken)}
+  .ms-panel input[type=checkbox]{accent-color:var(--violet);width:15px;height:15px}
+
+  /* ---------- Tabla ---------- */
+  .table-wrap{max-width:1560px;margin:18px auto 40px;padding:0 28px}
+  .table-card{background:#fff;border:1px solid var(--border);border-radius:12px;
+    box-shadow:var(--shadow-1);overflow:hidden}
+  .table-scroll{overflow:auto;max-height:calc(100vh - 300px)}
+  table.pivot{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
+  table.pivot th,table.pivot td{white-space:nowrap;padding:9px 12px;text-align:right}
+  /* Encabezado */
+  table.pivot thead th{position:sticky;top:0;z-index:20;background:var(--plum);color:#fff;
+    font-family:'Archivo',sans-serif;font-weight:600;font-size:12px;border-bottom:1px solid var(--plum)}
+  table.pivot thead th.corner{left:0;z-index:30;text-align:left;min-width:280px}
+  table.pivot thead th.col-total{background:var(--ink)}
+  /* Primera columna (etiquetas) sticky */
+  table.pivot .lbl{position:sticky;left:0;background:#fff;text-align:left;z-index:10;
+    min-width:280px;border-right:1px solid var(--border)}
+  /* Fila de courier (agrupador) */
+  tr.courier-row{cursor:pointer}
+  tr.courier-row td{background:var(--plum-tint);font-weight:700;color:var(--plum);
+    border-top:1px solid var(--plum-tint-2);font-family:'Archivo',sans-serif}
+  tr.courier-row td.lbl{background:var(--plum-tint)}
+  tr.courier-row:hover td,tr.courier-row:hover td.lbl{background:var(--plum-tint-2)}
+  .caret-tog{display:inline-block;width:14px;color:var(--violet);font-size:11px;margin-right:6px}
+  .courier-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:9px;vertical-align:middle}
+  /* Sub-filas de método */
+  tr.method-row td{color:var(--text);border-top:1px solid var(--sunken)}
+  tr.method-row td.lbl{padding-left:42px;color:var(--text);font-family:'Roboto Mono',monospace;font-size:12px}
+  tr.method-row:hover td,tr.method-row:hover td.lbl{background:var(--sunken)}
+  /* Números */
+  td.num{font-family:'Roboto Mono',monospace;font-variant-numeric:tabular-nums}
+  td.zero{color:#c8c8cc}
+  td.col-total,th.col-total{border-left:1px solid var(--border);font-weight:700;color:var(--plum)}
+  tr.method-row td.col-total{color:var(--text);font-weight:600}
+
+  /* Estado vacío */
+  .empty-state{padding:70px 24px;text-align:center;color:var(--muted)}
+  .empty-state .big{font-family:'Archivo',sans-serif;font-size:18px;color:var(--plum);font-weight:700;margin-bottom:6px}
+  .meta-line{max-width:1560px;margin:10px auto 0;padding:0 28px;font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+
+<header class="app">
+  <div class="header-inner">
+    <span class="brand-logo"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 415 120.438" fill="none">
+  <path d="M 24.387 109.242 C 29.5 109.242 34.105 106.857 35.728 105.742 L 35.728 117.256 C 34.024 118.108 29.59 120.41 22.682 120.41 C 9.038 120.41 0 110.855 0 97.9 C 0 84.946 9.038 75.381 22.682 75.381 C 29.5 75.381 33.77 77.602 35.474 78.454 L 35.474 90.049 C 33.081 88.345 28.82 86.55 24.387 86.55 C 17.651 86.55 12.873 90.983 12.873 97.891 C 12.873 104.799 17.479 109.232 24.387 109.232 L 24.387 109.242 Z M 86.822 97.9 C 86.822 110.864 77.185 120.41 64.049 120.41 C 50.913 120.41 41.367 110.855 41.367 97.9 C 41.367 84.946 50.913 75.381 64.049 75.381 C 77.185 75.381 86.822 84.936 86.822 97.9 Z M 74.801 97.9 C 74.801 90.82 70.114 86.133 64.058 86.133 C 58.002 86.133 53.397 90.82 53.397 97.9 C 53.397 104.981 58.002 109.668 64.058 109.668 C 70.114 109.668 74.801 104.981 74.801 97.9 Z M 107.129 76.578 L 107.474 81.437 C 107.555 82.969 107.22 83.994 107.129 84.42 L 107.301 84.42 C 109.096 79.987 113.865 76.406 119.413 75.807 C 120.773 75.553 122.224 75.553 123.593 75.726 C 128.452 76.406 132.377 79.053 134.082 83.912 C 137.318 78.971 142.44 75.381 148.324 75.381 C 157.788 75.381 163.074 81.183 163.074 92.524 L 163.074 119.214 L 150.282 119.214 L 150.282 94.401 C 150.282 90.222 148.831 86.985 144.734 86.985 C 137.481 86.985 135.605 93.63 135.605 100.538 L 135.605 119.214 L 122.894 119.214 L 122.894 94.31 C 122.894 90.303 121.707 86.976 117.437 86.976 C 110.275 86.976 108.226 93.54 108.226 100.529 L 108.226 119.205 L 95.434 119.205 L 95.434 76.569 L 107.12 76.569 L 107.129 76.578 Z M 185.774 76.578 L 186.119 81.437 C 186.2 82.969 185.865 83.994 185.774 84.42 L 185.946 84.42 C 187.741 79.987 192.51 76.406 198.058 75.807 C 199.418 75.553 200.868 75.553 202.237 75.726 C 207.097 76.406 211.022 79.053 212.726 83.912 C 215.963 78.971 221.085 75.381 226.969 75.381 C 236.433 75.381 241.718 81.183 241.718 92.524 L 241.718 119.214 L 228.927 119.214 L 228.927 94.401 C 228.927 90.222 227.476 86.985 223.379 86.985 C 216.126 86.985 214.249 93.63 214.249 100.538 L 214.249 119.214 L 201.539 119.214 L 201.539 94.31 C 201.539 90.303 200.352 86.976 196.082 86.976 C 188.92 86.976 186.871 93.54 186.871 100.529 L 186.871 119.205 L 174.079 119.205 L 174.079 76.569 L 185.765 76.569 L 185.774 76.578 Z M 290.936 95.344 C 290.936 97.647 290.682 99.695 290.592 100.548 L 262.624 100.548 C 263.141 106.35 267.574 109.677 274.482 109.677 C 280.538 109.677 286.847 107.882 289.232 106.522 L 289.232 117.355 C 286.585 118.715 280.873 120.429 273.285 120.429 C 258.617 120.429 249.406 110.964 249.406 97.918 C 249.406 84.873 258.871 75.399 271.064 75.399 C 284.2 75.399 290.936 84.782 290.936 95.353 L 290.936 95.344 Z M 270.982 85.453 C 265.869 85.453 262.968 89.379 262.624 93.975 L 278.743 93.975 C 278.915 89.37 276.186 85.453 270.982 85.453 Z M 299.73 76.587 L 311.325 76.587 L 311.579 80.766 C 311.579 82.044 311.579 83.069 311.66 83.577 C 314.298 78.971 318.741 75.39 324.28 75.39 C 325.64 75.39 326.836 75.563 327.008 75.644 L 327.008 88.091 C 326.836 88.01 325.812 87.575 324.189 87.575 C 317.707 87.575 312.422 93.286 312.422 101.046 L 312.422 119.214 L 299.712 119.214 L 299.712 76.578 L 299.73 76.587 Z M 355.511 109.251 C 360.624 109.251 365.229 106.866 366.852 105.751 L 366.852 117.265 C 365.148 118.117 360.706 120.42 353.798 120.42 C 340.154 120.42 331.115 110.864 331.115 97.909 C 331.115 84.955 340.154 75.39 353.798 75.39 C 360.624 75.39 364.885 77.611 366.589 78.464 L 366.589 90.059 C 364.205 88.354 359.944 86.559 355.502 86.559 C 348.766 86.559 343.988 90.992 343.988 97.9 C 343.988 104.808 348.594 109.242 355.502 109.242 L 355.511 109.251 Z M 415 95.353 C 415 97.656 414.746 99.704 414.655 100.557 L 386.688 100.557 C 387.205 106.359 391.638 109.686 398.546 109.686 C 404.602 109.686 410.911 107.891 413.296 106.531 L 413.296 117.364 C 410.648 118.724 404.937 120.438 397.349 120.438 C 382.681 120.438 373.47 110.973 373.47 97.928 C 373.47 84.882 382.935 75.408 395.128 75.408 C 408.264 75.408 415 84.791 415 95.362 L 415 95.353 Z M 395.046 85.462 C 389.933 85.462 387.032 89.388 386.688 93.984 L 402.807 93.984 C 402.979 89.379 400.25 85.462 395.046 85.462 Z M 16.028 19.954 L 16.028 62.59 L 3.236 62.59 L 3.236 19.954 L 16.028 19.954 Z M 39.653 19.954 L 39.998 24.813 C 40.079 26.345 39.744 27.369 39.653 27.795 L 39.826 27.795 C 41.621 23.87 47.25 18.757 54.494 18.757 C 64.131 18.757 69.334 24.641 69.334 35.9 L 69.334 62.59 L 56.543 62.59 L 56.543 38.031 C 56.543 33.851 55.355 30.352 50.741 30.352 C 44.775 30.352 40.768 34.957 40.768 41.349 L 40.768 62.58 L 27.977 62.58 L 27.977 19.945 L 39.662 19.945 L 39.653 19.954 Z M 82.217 19.954 L 82.217 16.119 C 82.217 6.391 88.445 0 99.868 0 C 102.515 0 104.727 0.344 105.497 0.517 L 105.497 11.35 C 104.817 11.096 103.195 10.752 101.146 10.752 C 96.794 10.752 93.984 13.145 93.984 17.578 L 93.984 19.963 L 103.965 19.963 L 103.965 29.944 L 94.501 29.944 L 94.501 62.608 L 81.791 62.608 L 81.791 29.944 L 76.161 29.944 L 76.161 19.963 L 82.217 19.963 L 82.217 19.954 Z M 110.792 19.954 L 122.387 19.954 L 122.641 24.133 C 122.641 25.411 122.641 26.436 122.722 26.943 C 125.36 22.338 129.803 18.757 135.342 18.757 C 136.702 18.757 137.898 18.929 138.07 19.011 L 138.07 31.458 C 137.898 31.376 136.874 30.941 135.251 30.941 C 128.769 30.941 123.484 36.653 123.484 44.413 L 123.484 62.58 L 110.774 62.58 L 110.774 19.945 L 110.792 19.954 Z M 145.169 21.658 C 147.553 20.552 153.265 18.757 160.771 18.757 C 173.907 18.757 180.471 25.067 180.471 35.728 L 180.471 62.59 L 168.957 62.59 L 168.703 58.664 C 168.622 56.869 168.876 55.681 168.876 55.681 L 168.703 55.681 C 167.597 58.238 163.327 63.786 155.486 63.786 C 148.151 63.786 141.923 59.516 141.923 50.822 C 141.923 40.424 152.494 35.302 167.851 37.432 L 167.851 36.408 C 167.851 31.295 164.352 29.418 158.722 29.418 C 153.092 29.418 147.979 31.295 145.169 33.09 L 145.169 21.658 Z M 167.507 44.086 C 157.951 42.554 153.944 45.537 153.944 49.544 C 153.944 52.273 155.821 54.059 158.804 54.059 C 163.744 54.059 167.498 49.544 167.498 44.086 L 167.507 44.086 Z" fill="currentColor" fill-rule="nonzero"></path>
+</svg></span>
+    <span class="brand-sep"></span>
+    <div class="title-block">
+      <h1>Qwery Infracommerce</h1>
+      <p>Tablero logístico · envíos por Courier y método, día a día</p>
+    </div>
+  </div>
+  <div class="rainbow"></div>
+</header>
+
+<div class="toolbar">
+  <!-- Botón + timestamp -->
+  <div class="update-group">
+    <button id="btnUpdate" class="btn-update">
+      <span class="spinner"></span>
+      <span class="btn-label">Actualizar descarga</span>
+    </button>
+    <div class="last-update" id="lastUpdate">Última actualización: <b>—</b></div>
+  </div>
+
+  <!-- Opciones de descarga -->
+  <div class="fetch-opts">
+    <span class="ms-label" style="margin:0 0 -2px">Fuente de datos</span>
+    <select id="sourceSel">
+      <option value="repo">Archivo del repo (lo actualiza GitHub Actions) · sin CORS</option>
+      <option value="direct">URL de VTEX en vivo (requiere CORS)</option>
+      <option value="proxy">URL de VTEX vía proxy CORS</option>
+    </select>
+    <select id="proxySel" style="display:none">
+      <option value="allorigins">Proxy: api.allorigins.win</option>
+      <option value="corsproxy">Proxy: corsproxy.io</option>
+      <option value="custom">Proxy propio (pegar URL)…</option>
+    </select>
+    <input type="text" id="proxyCustom" placeholder="https://mi-proxy.workers.dev/?url=" style="display:none">
+    <div class="sub">
+      ¿Sin conexión al servidor? <span class="file-load" id="fileLoad">Cargar un CSV local</span>
+      <input type="file" id="fileInput" accept=".csv,text/csv" style="display:none">
+    </div>
+  </div>
+
+  <!-- Filtros -->
+  <div class="filters">
+    <div class="ms" id="msCourier">
+      <span class="ms-label">Courier</span>
+      <button class="ms-btn" type="button"><span class="ms-text">Todos</span><span class="caret">▾</span></button>
+      <div class="ms-panel"></div>
+    </div>
+    <div class="ms" id="msBrand">
+      <span class="ms-label">Brand</span>
+      <button class="ms-btn" type="button"><span class="ms-text">Todos</span><span class="caret">▾</span></button>
+      <div class="ms-panel"></div>
+    </div>
+  </div>
+</div>
+
+<div class="banner"><div class="banner-error" id="errBanner"></div></div>
+
+<div class="table-wrap">
+  <div class="table-card">
+    <div class="table-scroll" id="tableScroll">
+      <div class="empty-state" id="emptyState">
+        <div class="big">Todavía no hay datos cargados</div>
+        <div>Tocá <b>“Actualizar descarga”</b> para bajar el CSV y armar la tabla.</div>
+      </div>
+    </div>
+  </div>
+  <div class="meta-line" id="metaLine"></div>
+</div>
+
+<script>
+/* ==========================================================================
+   (1) CONFIG
+   ========================================================================== */
+const CSV_URL = 'https://vtex.brandlive.net/upload/queries/ops-om-ar.csv';
+// Archivo same-origin del repo (lo baja GitHub Actions). Sin CORS -> fuente por defecto.
+const DATA_LOCAL = 'data/ops-om-ar.csv';
+
+// Nombres EXACTOS de columnas en el CSV (confirmados con la base real).
+// Referencias por posición del pedido original:
+//   Columna A  (índice 0)  -> COL.bajada  = "now()"  (fecha de la bajada)
+//   Columna AC (índice 28) -> COL.method  = "ship_shipping-method"
+const COL = {
+  bajada : 'now()',                    // A  -> timestamp de la descarga
+  brand  : 'brand_name',               // filtro Brand
+  fecha  : 'order_channel-created-at',  // fecha del pedido -> agrupa por día
+  method : 'ship_shipping-method',     // AC -> método de envío (sub-filas)
+  carrier: 'ship_carier2'              // carrier de respaldo (reglas 1 y 5)
+};
+
+// Lista CERRADA de couriers posibles. "Meliflex" NO es courier (es un tipo de envío).
+const COURIERS = ['Moova','Andreani','Ocasa','Fasttrack','Inner','Pickit','Cabify','Elogistica','HOP','Sin asignar'];
+
+// Color de marca por courier (para el punto identificador en la fila).
+const COURIER_COLOR = {
+  Moova:'#7A6CFF', Andreani:'#E52862', Ocasa:'#FFAC48', Fasttrack:'#43BDDE',
+  Inner:'#32CC7E', Pickit:'#9B59B6', Cabify:'#111', Elogistica:'#2D8CFF',
+  HOP:'#E67E22', 'Sin asignar':'#B8B8BE'
+};
+
+// Normaliza un valor de carrier a su nombre canónico de courier.
+const CANON = {
+  andreani:'Andreani', cabify:'Cabify', fasttrack:'Fasttrack', hop:'HOP',
+  inner:'Inner', innerlogistics:'Inner', moova:'Moova', ocasa:'Ocasa',
+  pickit:'Pickit', elogistica:'Elogistica', elogisticaregular:'Elogistica'
+};
+
+// Meses abreviados (es) para los encabezados de columna en formato corto.
+const MES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+
+// Estado en memoria (datos ya descargados; los filtros trabajan sobre esto).
+const state = { rows:[], days:[], filterCourier:new Set(), filterBrand:new Set(),
+                collapsed:new Set(), lastUpdate:'' };
+
+/* ==========================================================================
+   (3) LÓGICA DE NEGOCIO
+   -------------------------------------------------------------------------- */
+
+// Devuelve el nombre canónico de un carrier libre (col ship_carier2).
+function canonCarrier(raw){
+  const k = (raw||'').trim().toLowerCase();
+  if(!k) return null;
+  if(CANON[k]) return CANON[k];
+  // Fallback auditable: se muestra tal cual con la 1ª letra en mayúscula
+  // (no se pierde silenciosamente ningún valor inesperado).
+  return k.charAt(0).toUpperCase() + k.slice(1);
+}
+
+/*
+  getCourier(method, carrier2) — FUNCIÓN PURA Y AUDITABLE.
+  Evalúa reglas EN ORDEN sobre ship_shipping-method (en minúsculas).
+  Gana la PRIMERA que matchea.
+*/
+function getCourier(method, carrier2){
+  const m = (method || '').trim().toLowerCase();
+
+  // Regla 1: me2_flex_bsas / me2_flex_caba -> courier desde ship_carier2
+  if(m === 'me2_flex_bsas' || m === 'me2_flex_caba'){
+    return canonCarrier(carrier2) || 'Sin asignar';
+  }
+  // Regla 2: empieza con spu_estandar -> Elogistica
+  if(m.startsWith('spu_estandar')) return 'Elogistica';
+  // Regla 3: empieza con spu_ocasa -> Ocasa
+  if(m.startsWith('spu_ocasa')) return 'Ocasa';
+  // Regla 4: prefijo antes del primer "_" o ":" dentro de la lista conocida
+  const iU = m.indexOf('_'), iC = m.indexOf(':');
+  const cut = Math.min(iU === -1 ? Infinity : iU, iC === -1 ? Infinity : iC);
+  const prefix = cut === Infinity ? m : m.slice(0, cut);
+  if(CANON[prefix]) return CANON[prefix];
+  // Regla 5: fallback -> ship_carier2 ; vacío -> Sin asignar
+  return canonCarrier(carrier2) || 'Sin asignar';
+}
+
+// Parsea "d/m/aaaa hh:mm" -> {key:'aaaa-mm-dd' (ordenable), label:'d mmm'}.
+function parseDay(raw){
+  if(!raw) return { key:'zzzz', label:'s/f' };
+  const datePart = String(raw).trim().split(/\s+/)[0];      // "25/8/2026"
+  const p = datePart.split('/');
+  if(p.length < 3) return { key:'zzzz', label:'s/f' };
+  const d = parseInt(p[0],10), mo = parseInt(p[1],10), y = parseInt(p[2],10);
+  if(!d || !mo || !y) return { key:'zzzz', label:'s/f' };
+  const key = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  return { key, label:`${d} ${MES[mo-1] || ''}`.trim() };
+}
+
+/*
+  buildPivot(rows) — arma la estructura del pivot aplicando los filtros activos.
+  Devuelve: { days:[{key,label}], couriers:[{name, methods:[{name, cells, total}], totals, total}] }
+
+  TODO (métrica): hoy cada celda CUENTA filas (envíos/pedidos).
+  Para sumar un monto en vez de contar, cambiá `+ 1` por `+ Number(row['<columna_monto>'])`
+  en el acumulador de abajo (buscá el comentario "MÉTRICA").
+*/
+function buildPivot(rows){
+  const dayMap = new Map();              // key -> label
+  // pivot: courier -> method -> {dayKey -> count}
+  const pivot = new Map();
+
+  for(const row of rows){
+    const brand = (row[COL.brand] || '').trim();
+    if(state.filterBrand.size && !state.filterBrand.has(brand)) continue;
+
+    const courier = getCourier(row[COL.method], row[COL.carrier]);
+    if(state.filterCourier.size && !state.filterCourier.has(courier)) continue;
+
+    const method = (row[COL.method] || '(vacío)').trim() || '(vacío)';
+    const { key, label } = parseDay(row[COL.fecha]);
+    dayMap.set(key, label);
+
+    if(!pivot.has(courier)) pivot.set(courier, new Map());
+    const mMap = pivot.get(courier);
+    if(!mMap.has(method)) mMap.set(method, new Map());
+    const cMap = mMap.get(method);
+    cMap.set(key, (cMap.get(key) || 0) + 1);   // MÉTRICA: count de filas
+  }
+
+  // Columnas (días) ordenadas cronológicamente ('zzzz'/s-f queda al final).
+  const days = [...dayMap.keys()].sort().map(k => ({ key:k, label:dayMap.get(k) }));
+
+  // Ordenar couriers según la lista cerrada; los que no estén, al final.
+  const order = c => { const i = COURIERS.indexOf(c); return i === -1 ? 999 : i; };
+  const couriers = [...pivot.keys()].sort((a,b)=>order(a)-order(b) || a.localeCompare(b))
+    .map(cName => {
+      const mMap = pivot.get(cName);
+      const totals = {}; let total = 0;
+      const methods = [...mMap.keys()].map(mName => {
+        const cMap = mMap.get(mName);
+        const cells = {}; let mTotal = 0;
+        for(const d of days){
+          const v = cMap.get(d.key) || 0;
+          cells[d.key] = v; mTotal += v;
+          totals[d.key] = (totals[d.key] || 0) + v;
+        }
+        total += mTotal;
+        return { name:mName, cells, total:mTotal };
+      }).sort((a,b)=>b.total - a.total);   // métodos por volumen desc
+      return { name:cName, methods, totals, total };
+    });
+
+  return { days, couriers };
+}
+
+/* ==========================================================================
+   (4) RENDER — tabla y filtros
+   ========================================================================== */
+const fmt = n => n ? n.toLocaleString('es-AR') : '';
+
+function renderTable(){
+  const scroll = document.getElementById('tableScroll');
+  if(!state.rows.length){
+    scroll.innerHTML = `<div class="empty-state"><div class="big">Todavía no hay datos cargados</div>
+      <div>Tocá <b>“Actualizar descarga”</b> para bajar el CSV y armar la tabla.</div></div>`;
+    document.getElementById('metaLine').textContent = '';
+    return;
+  }
+
+  const { days, couriers } = buildPivot(state.rows);
+
+  if(!couriers.length){
+    scroll.innerHTML = `<div class="empty-state"><div class="big">Sin resultados</div>
+      <div>Ningún registro coincide con los filtros seleccionados.</div></div>`;
+    document.getElementById('metaLine').textContent = '';
+    return;
+  }
+
+  let html = '<table class="pivot"><thead><tr>';
+  html += '<th class="corner">Courier / Método de envío</th>';
+  for(const d of days) html += `<th>${d.label}</th>`;
+  html += '<th class="col-total">Total</th></tr></thead><tbody>';
+
+  let grand = 0;
+  for(const c of couriers){
+    grand += c.total;
+    const isCol = state.collapsed.has(c.name);
+    const caret = isCol ? '▸' : '▾';
+    const color = COURIER_COLOR[c.name] || '#B8B8BE';
+    // Fila de courier = TOTAL por courier (suma de sus métodos) + colapsable
+    html += `<tr class="courier-row" data-courier="${escAttr(c.name)}">`;
+    html += `<td class="lbl"><span class="caret-tog">${caret}</span>`+
+            `<span class="courier-dot" style="background:${color}"></span>${escHtml(c.name)}</td>`;
+    for(const d of days){
+      const v = c.totals[d.key] || 0;
+      html += `<td class="num ${v?'':'zero'}">${v?fmt(v):'·'}</td>`;
+    }
+    html += `<td class="num col-total">${fmt(c.total)}</td></tr>`;
+
+    // Sub-filas por método (ocultas si el courier está colapsado)
+    for(const m of c.methods){
+      const disp = isCol ? ' style="display:none"' : '';
+      html += `<tr class="method-row" data-of="${escAttr(c.name)}"${disp}>`;
+      html += `<td class="lbl">${escHtml(m.name)}</td>`;
+      for(const d of days){
+        const v = m.cells[d.key] || 0;
+        html += `<td class="num ${v?'':'zero'}">${v?fmt(v):'·'}</td>`;
+      }
+      html += `<td class="num col-total">${fmt(m.total)}</td></tr>`;
+    }
+  }
+  html += '</tbody></table>';
+  scroll.innerHTML = html;
+
+  document.getElementById('metaLine').textContent =
+    `${fmt(state.rows.length)} filas procesadas · ${couriers.length} couriers · ${days.length} días · total de envíos mostrado: ${fmt(grand)}`;
+
+  // Toggle colapso por courier
+  scroll.querySelectorAll('tr.courier-row').forEach(tr=>{
+    tr.addEventListener('click', ()=>{
+      const name = tr.getAttribute('data-courier');
+      if(state.collapsed.has(name)) state.collapsed.delete(name);
+      else state.collapsed.add(name);
+      renderTable();
+    });
+  });
+}
+
+// --- Multi-select genérico (filtros) ---
+function buildMultiselect(elId, values, selectedSet, onChange){
+  const root = document.getElementById(elId);
+  const panel = root.querySelector('.ms-panel');
+  const textEl = root.querySelector('.ms-text');
+  panel.innerHTML = `<div class="ms-actions"><a data-act="all">Todos</a><a data-act="none">Ninguno</a></div>` +
+    values.map(v=>`<label><input type="checkbox" value="${escAttr(v)}" ${selectedSet.has(v)?'checked':''}>${escHtml(v)}</label>`).join('');
+
+  const updateText = ()=>{
+    if(selectedSet.size === 0 || selectedSet.size === values.length) textEl.textContent = 'Todos';
+    else textEl.textContent = `${selectedSet.size} de ${values.length}`;
+  };
+  updateText();
+
+  panel.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      if(cb.checked) selectedSet.add(cb.value); else selectedSet.delete(cb.value);
+      updateText(); onChange();
+    });
+  });
+  panel.querySelectorAll('a[data-act]').forEach(a=>{
+    a.addEventListener('click', e=>{
+      e.stopPropagation();
+      selectedSet.clear();
+      if(a.dataset.act === 'all') values.forEach(v=>selectedSet.add(v));
+      panel.querySelectorAll('input[type=checkbox]').forEach(cb=>cb.checked = selectedSet.has(cb.value));
+      updateText(); onChange();
+    });
+  });
+
+  const btn = root.querySelector('.ms-btn');
+  btn.onclick = e=>{
+    e.stopPropagation();
+    document.querySelectorAll('.ms-panel').forEach(p=>{ if(p!==panel) p.classList.remove('open'); });
+    panel.classList.toggle('open');
+  };
+}
+document.addEventListener('click', ()=>document.querySelectorAll('.ms-panel').forEach(p=>p.classList.remove('open')));
+
+function refreshFilters(){
+  // Courier: lista cerrada; Brand: valores únicos del CSV descargado
+  buildMultiselect('msCourier', COURIERS, state.filterCourier, renderTable);
+  const brands = [...new Set(state.rows.map(r=>(r[COL.brand]||'').trim()).filter(Boolean))].sort();
+  buildMultiselect('msBrand', brands, state.filterBrand, renderTable);
+}
+
+// Helpers de escape
+function escHtml(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function escAttr(s){return String(s).replace(/"/g,'&quot;');}
+
+/* ==========================================================================
+   (2) FETCH + PARSEO
+   -------------------------------------------------------------------------- */
+
+// Construye la URL con cache-buster para forzar descarga fresca.
+function bustUrl(u){ return u + (u.includes('?') ? '&' : '?') + '_cb=' + Date.now(); }
+
+// Envuelve la URL con el proxy elegido (solo si el usuario habilitó el fallback).
+function wrapProxy(u){
+  const sel = document.getElementById('proxySel').value;
+  if(sel === 'allorigins') return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u);
+  if(sel === 'corsproxy')  return 'https://corsproxy.io/?url=' + encodeURIComponent(u);
+  if(sel === 'custom'){
+    const base = document.getElementById('proxyCustom').value.trim();
+    if(!base) throw new Error('Ingresá la URL de tu proxy propio.');
+    return base + encodeURIComponent(u);
+  }
+  return u;
+}
+
+async function downloadCsvText(){
+  const source = document.getElementById('sourceSel').value;
+
+  // Fuente por defecto: archivo del repo (same-origin, sin CORS).
+  if(source === 'repo'){
+    const res = await fetch(bustUrl(DATA_LOCAL), { cache:'no-store' });
+    if(!res.ok) throw new Error('No se encontró "' + DATA_LOCAL + '" (HTTP ' + res.status +
+      '). ¿Ya corrió el workflow de GitHub Actions que baja el CSV?');
+    return await res.text();
+  }
+
+  const fresh = bustUrl(CSV_URL);
+  // Vía proxy CORS
+  if(source === 'proxy'){
+    const res = await fetch(wrapProxy(fresh), { cache:'no-store' });
+    if(!res.ok) throw new Error('Proxy HTTP ' + res.status + ' ' + res.statusText);
+    return await res.text();
+  }
+  // URL directa (sin cache) — fallará si VTEX no manda headers CORS
+  const res = await fetch(fresh, { cache:'no-store' });
+  if(!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+  return await res.text();
+}
+
+// Parseo del texto CSV -> filas (objetos por nombre de columna).
+function parseCsv(text){
+  const out = Papa.parse(text, {
+    header:true,          // usa la primera fila como nombres de columna
+    delimiter:';',        // separador real del archivo
+    skipEmptyLines:true,
+    transformHeader:h=>h.trim()
+  });
+  return out.data.filter(r => r && Object.keys(r).length);
+}
+
+// Pipeline compartido: recibe texto CSV, actualiza estado y re-renderiza.
+// Expuesto para poder inyectar un CSV (archivo local o tests).
+function ingestCsv(text){
+  const rows = parseCsv(text);
+  if(!rows.length) throw new Error('El CSV se descargó pero no tiene filas de datos.');
+  state.rows = rows;
+  // Timestamp: columna A (now()) de la primera fila de datos.
+  state.lastUpdate = (rows[0][COL.bajada] || '').trim() || '—';
+  // Reset de filtros a "todos"
+  state.filterCourier = new Set(COURIERS);
+  state.filterBrand   = new Set(rows.map(r=>(r[COL.brand]||'').trim()).filter(Boolean));
+  refreshFilters();
+  renderTable();
+  document.getElementById('lastUpdate').innerHTML =
+    'Última actualización: <b class="lu-mono">' + escHtml(state.lastUpdate) + '</b>';
+}
+window.qwery = { ingestCsv, getCourier, buildPivot, state };  // auditable / testeable
+
+/* ==========================================================================
+   (5) UI / WIRING — botón, estados de carga, errores
+   ========================================================================== */
+const btn = document.getElementById('btnUpdate');
+const errBanner = document.getElementById('errBanner');
+
+function setLoading(on){
+  btn.classList.toggle('loading', on);
+  btn.disabled = on;
+  btn.querySelector('.btn-label').textContent = on ? 'Actualizando…' : 'Actualizar descarga';
+}
+function showError(msg){
+  errBanner.innerHTML = msg;
+  errBanner.classList.add('show');
+}
+function clearError(){ errBanner.classList.remove('show'); errBanner.innerHTML=''; }
+
+async function updateNow(){
+  clearError();
+  setLoading(true);
+  try{
+    const text = await downloadCsvText();
+    ingestCsv(text);
+  }catch(err){
+    const isCors = err && (err.name === 'TypeError' || /failed to fetch|load failed|networkerror/i.test(err.message||''));
+    if(isCors){
+      showError('<b>No se pudo descargar el CSV (probable bloqueo CORS).</b><br>'+
+        'El servidor <code>vtex.brandlive.net</code> no está enviando headers CORS que permitan '+
+        'leerlo desde este dominio. Usá la fuente <b>“Archivo del repo”</b> (recomendada, la actualiza '+
+        'GitHub Actions), o probá <b>“vía proxy CORS”</b>, o cargá un CSV local.');
+    }else{
+      showError('<b>Error al actualizar:</b> ' + escHtml(err.message || String(err)));
+    }
+  }finally{
+    setLoading(false);
+  }
+}
+
+btn.addEventListener('click', updateNow);
+
+// Fuente de datos: mostrar/ocultar controles de proxy
+document.getElementById('sourceSel').addEventListener('change', e=>{
+  const isProxy = e.target.value === 'proxy';
+  document.getElementById('proxySel').style.display = isProxy ? 'block' : 'none';
+  document.getElementById('proxyCustom').style.display =
+    (isProxy && document.getElementById('proxySel').value === 'custom') ? 'block' : 'none';
+});
+// Proxy: mostrar/ocultar campo de URL propia
+document.getElementById('proxySel').addEventListener('change', e=>{
+  document.getElementById('proxyCustom').style.display = e.target.value==='custom' ? 'block' : 'none';
+});
+
+// Carga de CSV local (fallback / test offline)
+document.getElementById('fileLoad').addEventListener('click', ()=>document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', e=>{
+  const f = e.target.files[0]; if(!f) return;
+  clearError(); setLoading(true);
+  const reader = new FileReader();
+  reader.onload = () => { try{ ingestCsv(reader.result); }catch(err){ showError('<b>Error:</b> '+escHtml(err.message)); } finally{ setLoading(false); } };
+  reader.onerror = () => { showError('No se pudo leer el archivo local.'); setLoading(false); };
+  reader.readAsText(f);
+});
+
+// Estado inicial: filtros de courier con la lista cerrada (aún sin datos).
+buildMultiselect('msCourier', COURIERS, state.filterCourier, renderTable);
+</script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+/* Otto Design System — base element defaults.
+   Lightweight, non-invasive resets so specimens and kits render consistently. */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--type-body-md);
+  line-height: 1.5715;
+  color: var(--text-primary);
+  background: var(--surface-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+  color: var(--text-heading);
+  margin: 0;
+}
+
+a { color: var(--text-link); text-decoration: none; }
+a:hover { color: var(--brand-primary-hover); }
+
+code, pre, kbd { font-family: var(--font-mono); }
+
+/* Shared motion */
+@keyframes otto-spin { to { transform: rotate(360deg); } }
+@keyframes otto-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes otto-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+@keyframes otto-skeleton { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+@keyframes otto-slide-up { from { opacity: 0; transform: translateY(-100%); } to { opacity: 1; transform: translateY(0); } }
+@keyframes otto-slide-in-right { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes otto-progress { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+@keyframes otto-drawer-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes otto-drawer-left { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@keyframes otto-drawer-top { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+@keyframes otto-drawer-bottom { from { transform: translateY(100%); } to { transform: translateY(0); } }

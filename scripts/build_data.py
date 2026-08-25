@@ -103,7 +103,14 @@ def main():
         print("ERROR al descargar el CSV: %s" % e, file=sys.stderr)
         sys.exit(1)
 
-    reader = csv.DictReader(io.StringIO(text), delimiter=";")
+    # El separador puede variar entre exports (la muestra vino con ';', el CSV
+    # en vivo usa ','). Se detecta con la línea de encabezado: gana el que más
+    # columnas produce.
+    first_line = text.split("\n", 1)[0]
+    delim = max([",", ";", "\t", "|"], key=lambda d: len(first_line.split(d)))
+    print("Delimitador detectado: %r" % delim, flush=True)
+
+    reader = csv.DictReader(io.StringIO(text), delimiter=delim)
     cols = reader.fieldnames or []
     needed = ["order_id", "order_status", "ship_shipping-method",
               "brand_name", "order_channel-created-at", "ship_carier2"]

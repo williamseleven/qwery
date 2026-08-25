@@ -1,0 +1,42 @@
+name: Actualizar datos CSV
+
+# Baja el CSV desde VTEX del lado del servidor (sin CORS) y lo commitea al repo.
+# La página lo lee same-origin desde data/ops-om-ar.csv -> no hay problema de CORS.
+
+on:
+  workflow_dispatch:            # botón "Run workflow" manual en la pestaña Actions
+  schedule:
+    - cron: '0 * * * *'         # además, automático cada hora (UTC). Ajustá/borrá si querés.
+
+permissions:
+  contents: write               # necesario para que el bot pueda commitear
+
+concurrency:
+  group: update-data
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Descargar CSV desde VTEX
+        run: |
+          mkdir -p data
+          # -f falla si el server responde error; -sSL sigue redirects en silencio
+          curl -fsSL "https://vtex.brandlive.net/upload/queries/ops-om-ar.csv" -o data/ops-om-ar.csv
+          echo "Filas descargadas: $(wc -l < data/ops-om-ar.csv)"
+
+      - name: Commitear si cambió
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ops-om-ar.csv
+          if git diff --quiet --cached; then
+            echo "Sin cambios en el CSV."
+          else
+            git commit -m "chore: actualizar datos CSV [skip ci]"
+            git push
+          fi

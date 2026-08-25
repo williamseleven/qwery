@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Qwery Infracommerce</title>
+<title>Transportadoras Infracommerce</title>
 
 <!--
   ============================================================================
@@ -107,6 +107,9 @@
   .last-update{font-size:12.5px;color:var(--text)}
   .last-update b{color:var(--plum);font-weight:600}
   .last-update .lu-mono{font-family:'Roboto Mono',monospace;font-size:12px}
+  .auto-line{font-size:12.5px;color:var(--text);display:flex;align-items:center;gap:7px;cursor:pointer}
+  .auto-line input{accent-color:var(--violet);width:15px;height:15px}
+  .auto-line #autoNext{color:var(--muted)}
 
   /* Estado de error */
   .banner{max-width:1560px;margin:8px auto 0;padding:0 28px}
@@ -145,6 +148,15 @@
     font-size:13px;cursor:pointer;color:var(--text)}
   .ms-panel label:hover{background:var(--sunken)}
   .ms-panel input[type=checkbox]{accent-color:var(--violet);width:15px;height:15px}
+  /* Filtro de fecha */
+  .date-filter{display:flex;flex-direction:column}
+  .date-row{display:flex;align-items:center;gap:8px}
+  .date-row input[type=date]{font-family:inherit;font-size:13px;border:1px solid var(--border);
+    border-radius:6px;padding:8px 10px;color:var(--text);background:#fff}
+  .date-row input[type=date]:hover{border-color:var(--violet)}
+  .date-row span{color:var(--muted);font-size:12px}
+  .date-clear{background:none;border:none;color:var(--violet);cursor:pointer;font-size:12px;font-family:inherit}
+  .date-clear:hover{text-decoration:underline}
 
   /* ---------- Tabla ---------- */
   .table-wrap{max-width:1560px;margin:18px auto 40px;padding:0 28px}
@@ -194,7 +206,7 @@
 </svg></span>
     <span class="brand-sep"></span>
     <div class="title-block">
-      <h1>Qwery Infracommerce</h1>
+      <h1>Transportadoras Infracommerce</h1>
       <p>Tablero logístico · envíos por Courier y método, día a día</p>
     </div>
   </div>
@@ -209,24 +221,14 @@
       <span class="btn-label">Actualizar descarga</span>
     </button>
     <div class="last-update" id="lastUpdate">Última actualización: <b>—</b></div>
+    <label class="auto-line"><input type="checkbox" id="autoRefresh" checked> Actualizar automáticamente cada 5 min <span id="autoNext"></span></label>
   </div>
 
   <!-- Opciones de descarga -->
   <div class="fetch-opts">
-    <span class="ms-label" style="margin:0 0 -2px">Fuente de datos</span>
-    <select id="sourceSel">
-      <option value="repo">Archivo del repo (lo actualiza GitHub Actions) · sin CORS</option>
-      <option value="direct">URL de VTEX en vivo (requiere CORS)</option>
-      <option value="proxy">URL de VTEX vía proxy CORS</option>
-    </select>
-    <select id="proxySel" style="display:none">
-      <option value="allorigins">Proxy: api.allorigins.win</option>
-      <option value="corsproxy">Proxy: corsproxy.io</option>
-      <option value="custom">Proxy propio (pegar URL)…</option>
-    </select>
-    <input type="text" id="proxyCustom" placeholder="https://mi-proxy.workers.dev/?url=" style="display:none">
-    <div class="sub">
-      ¿Sin conexión al servidor? <span class="file-load" id="fileLoad">Cargar un CSV local</span>
+    <div class="sub" style="padding-left:0">
+      Los datos salen de <code>data/ops-om-ar.csv</code> (lo actualiza GitHub Actions).<br>
+      ¿Necesitás probar otro archivo? <span class="file-load" id="fileLoad">Cargar un CSV local</span>
       <input type="file" id="fileInput" accept=".csv,text/csv" style="display:none">
     </div>
   </div>
@@ -242,6 +244,15 @@
       <span class="ms-label">Brand</span>
       <button class="ms-btn" type="button"><span class="ms-text">Todos</span><span class="caret">▾</span></button>
       <div class="ms-panel"></div>
+    </div>
+    <div class="date-filter">
+      <span class="ms-label">Fecha</span>
+      <div class="date-row">
+        <input type="date" id="dateFrom">
+        <span>a</span>
+        <input type="date" id="dateTo">
+        <button type="button" class="date-clear" id="dateClear">limpiar</button>
+      </div>
     </div>
   </div>
 </div>
@@ -302,7 +313,7 @@ const MES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','
 
 // Estado en memoria (datos ya descargados; los filtros trabajan sobre esto).
 const state = { rows:[], days:[], filterCourier:new Set(), filterBrand:new Set(),
-                collapsed:new Set(), lastUpdate:'' };
+                collapsed:new Set(), lastUpdate:'', dateFrom:'', dateTo:'' };
 
 /* ==========================================================================
    (3) LÓGICA DE NEGOCIO
@@ -377,6 +388,9 @@ function buildPivot(rows){
 
     const method = (row[COL.method] || '(vacío)').trim() || '(vacío)';
     const { key, label } = parseDay(row[COL.fecha]);
+    // Filtro de fecha (rango desde/hasta). Las claves son 'aaaa-mm-dd' -> comparación de strings.
+    if(state.dateFrom && key < state.dateFrom) continue;
+    if(state.dateTo && key > state.dateTo) continue;
     dayMap.set(key, label);
 
     if(!pivot.has(courier)) pivot.set(courier, new Map());
@@ -556,26 +570,10 @@ function wrapProxy(u){
 }
 
 async function downloadCsvText(){
-  const source = document.getElementById('sourceSel').value;
-
-  // Fuente por defecto: archivo del repo (same-origin, sin CORS).
-  if(source === 'repo'){
-    const res = await fetch(bustUrl(DATA_LOCAL), { cache:'no-store' });
-    if(!res.ok) throw new Error('No se encontró "' + DATA_LOCAL + '" (HTTP ' + res.status +
-      '). ¿Ya corrió el workflow de GitHub Actions que baja el CSV?');
-    return await res.text();
-  }
-
-  const fresh = bustUrl(CSV_URL);
-  // Vía proxy CORS
-  if(source === 'proxy'){
-    const res = await fetch(wrapProxy(fresh), { cache:'no-store' });
-    if(!res.ok) throw new Error('Proxy HTTP ' + res.status + ' ' + res.statusText);
-    return await res.text();
-  }
-  // URL directa (sin cache) — fallará si VTEX no manda headers CORS
-  const res = await fetch(fresh, { cache:'no-store' });
-  if(!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+  // Fuente única: archivo del repo (same-origin, sin CORS). Descarga fresca.
+  const res = await fetch(bustUrl(DATA_LOCAL), { cache:'no-store' });
+  if(!res.ok) throw new Error('No se encontró "' + DATA_LOCAL + '" (HTTP ' + res.status +
+    '). ¿Ya corrió el workflow de GitHub Actions que baja el CSV?');
   return await res.text();
 }
 
@@ -601,6 +599,10 @@ function ingestCsv(text){
   // Reset de filtros a "todos"
   state.filterCourier = new Set(COURIERS);
   state.filterBrand   = new Set(rows.map(r=>(r[COL.brand]||'').trim()).filter(Boolean));
+  // Reset del filtro de fecha a "todas"
+  state.dateFrom = ''; state.dateTo = '';
+  const _df = document.getElementById('dateFrom'), _dt = document.getElementById('dateTo');
+  if(_df) _df.value = ''; if(_dt) _dt.value = '';
   refreshFilters();
   renderTable();
   document.getElementById('lastUpdate').innerHTML =
@@ -634,10 +636,9 @@ async function updateNow(){
   }catch(err){
     const isCors = err && (err.name === 'TypeError' || /failed to fetch|load failed|networkerror/i.test(err.message||''));
     if(isCors){
-      showError('<b>No se pudo descargar el CSV (probable bloqueo CORS).</b><br>'+
-        'El servidor <code>vtex.brandlive.net</code> no está enviando headers CORS que permitan '+
-        'leerlo desde este dominio. Usá la fuente <b>“Archivo del repo”</b> (recomendada, la actualiza '+
-        'GitHub Actions), o probá <b>“vía proxy CORS”</b>, o cargá un CSV local.');
+      showError('<b>No se pudo cargar el CSV.</b><br>'+
+        'La página lee <code>data/ops-om-ar.csv</code> del repo. Verificá que el workflow '+
+        'de GitHub Actions haya corrido y generado ese archivo, o cargá un CSV local.');
     }else{
       showError('<b>Error al actualizar:</b> ' + escHtml(err.message || String(err)));
     }
@@ -647,18 +648,6 @@ async function updateNow(){
 }
 
 btn.addEventListener('click', updateNow);
-
-// Fuente de datos: mostrar/ocultar controles de proxy
-document.getElementById('sourceSel').addEventListener('change', e=>{
-  const isProxy = e.target.value === 'proxy';
-  document.getElementById('proxySel').style.display = isProxy ? 'block' : 'none';
-  document.getElementById('proxyCustom').style.display =
-    (isProxy && document.getElementById('proxySel').value === 'custom') ? 'block' : 'none';
-});
-// Proxy: mostrar/ocultar campo de URL propia
-document.getElementById('proxySel').addEventListener('change', e=>{
-  document.getElementById('proxyCustom').style.display = e.target.value==='custom' ? 'block' : 'none';
-});
 
 // Carga de CSV local (fallback / test offline)
 document.getElementById('fileLoad').addEventListener('click', ()=>document.getElementById('fileInput').click());
@@ -673,6 +662,46 @@ document.getElementById('fileInput').addEventListener('change', e=>{
 
 // Estado inicial: filtros de courier con la lista cerrada (aún sin datos).
 buildMultiselect('msCourier', COURIERS, state.filterCourier, renderTable);
+
+// Filtro de fecha (rango desde/hasta)
+document.getElementById('dateFrom').addEventListener('change', e=>{ state.dateFrom = e.target.value; renderTable(); });
+document.getElementById('dateTo').addEventListener('change',   e=>{ state.dateTo   = e.target.value; renderTable(); });
+document.getElementById('dateClear').addEventListener('click', ()=>{
+  state.dateFrom = ''; state.dateTo = '';
+  document.getElementById('dateFrom').value = '';
+  document.getElementById('dateTo').value = '';
+  renderTable();
+});
+
+/* ---------- Auto-refresh cada 5 minutos (navegador) ---------- */
+const AUTO_MS = 5 * 60 * 1000;
+let autoTimer = null, tickTimer = null, nextAt = 0;
+const autoChk = document.getElementById('autoRefresh');
+
+function updateCountdown(){
+  const el = document.getElementById('autoNext');
+  if(!autoChk.checked){ el.textContent = ''; return; }
+  const s = Math.max(0, Math.round((nextAt - Date.now())/1000));
+  el.textContent = '· próx. ' + Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+}
+function startAuto(){
+  stopAuto();
+  nextAt = Date.now() + AUTO_MS;
+  autoTimer = setInterval(()=>{
+    if(!btn.disabled) updateNow();   // evita solaparse si una descarga sigue en curso
+    nextAt = Date.now() + AUTO_MS;
+  }, AUTO_MS);
+  tickTimer = setInterval(updateCountdown, 1000);
+  updateCountdown();
+}
+function stopAuto(){
+  clearInterval(autoTimer); clearInterval(tickTimer);
+  document.getElementById('autoNext').textContent = '';
+}
+autoChk.addEventListener('change', e => { if(e.target.checked) startAuto(); else stopAuto(); });
+
+// Al cargar: si el auto está activo, trae los datos ya y arranca el ciclo.
+if(autoChk.checked){ updateNow(); startAuto(); }
 </script>
 </body>
 </html>

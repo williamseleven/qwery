@@ -25,11 +25,10 @@ jobs:
       - name: Descargar CSV desde VTEX
         run: |
           mkdir -p data
-          # -f falla si el server responde error; -sSL sigue redirects en silencio
           curl -fsSL "https://vtex.brandlive.net/upload/queries/ops-om-ar.csv" -o data/ops-om-ar.csv
           echo "Filas descargadas: $(wc -l < data/ops-om-ar.csv)"
 
-    - name: Commitear si cambió
+      - name: Commitear si cambió
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
